@@ -8,14 +8,14 @@ This document plans a **self-hosted, always-on autonomous agent** that runs on t
 |-------|------|------|
 | Communication / front door | **OpenClaw** | Messaging channels (Telegram/WhatsApp/Slack/Discord/Signal/…) → Gateway control plane |
 | Orchestration (top-level brain) | **Paperclip** | Decomposes goals, "hires" specialized sub-agents, org chart + budgets + governance |
-| Harness / execution | **Claude Code** (primary) + **OpenAI Codex** (secondary) | The agents that actually *do* the work |
+| Harness / execution | **Claude Code** + **OpenAI Codex** (collaborating peers) | The agents that actually *do* the work |
 | Memory | **Hermes** (Nous Research) | Persistent + shared memory across agents/sessions |
 
 These tools **overlap** (each ships its own agent loop), so the design deliberately uses only one layer from each and disables the others' redundant loops.
 
 **Decisions driving this plan:**
 - **Topology:** Paperclip is the top-level orchestrator. OpenClaw is a channel front-door that feeds goals into Paperclip; Claude Code/Codex are hired harnesses; Hermes is shared memory.
-- **Model routing:** Claude Code is the default harness; Codex/OpenAI is fallback + second-opinion + specific roles.
+- **Model collaboration:** Claude Code and Codex run **simultaneously as peer harnesses** (not primary/fallback), in one of two modes selectable per goal — **relay** (one plans → the other implements → the first reviews) or **council** (both plan together → either implements → both review). Roles are provider-agnostic slots; the **reviewer is always the *other* provider than the implementer**. Council deadlock or a persistently failing review **escalates to the user via chat** (no autonomous tiebreak). Review revisions are capped (default 1) since both providers active ~doubles spend.
 - **Packaging:** Docker Compose stack, local-first.
 - **Memory:** Hybrid — local hot tier on the machine + a **shared cloud tier self-hosted on a small VPS** so memory is reachable across agents and devices.
 
@@ -37,8 +37,9 @@ These tools **overlap** (each ships its own agent loop), so the design deliberat
                                           ┌──────────┴───────────┐
                                           ▼                      ▼
                                  ┌──────────────┐       ┌──────────────┐
-                                 │ Claude Code  │       │ OpenAI Codex │   (harnesses)
-                                 │  (primary)   │       │ (secondary)  │
+                                 │ Claude Code  │◀═════▶│ OpenAI Codex │   (peer harnesses)
+                                 │   (peer)     │ cross │   (peer)     │   relay / council
+                                 │              │ review│              │   cross-review
                                  └──────┬───────┘       └──────┬───────┘
                                         │ memory tools (MCP)   │
                                         ▼                      ▼
@@ -55,7 +56,7 @@ These tools **overlap** (each ships its own agent loop), so the design deliberat
 
 ### Why each integration point works
 - **OpenClaw → Paperclip:** OpenClaw's Plugin SDK (`register(api)`) exposes `api.registerChannel`, `api.registerTool`, and lifecycle hooks (`message_received`, `before_tool_call`, `gateway_start`). We do **not** let OpenClaw run its own LLM agent loop; instead a thin plugin forwards inbound messages to Paperclip's API and posts results back to the originating channel/session.
-- **Paperclip → harnesses:** Paperclip is runtime-agnostic and ships adapters implementing `ServerAdapterModule` (`execute`, `testEnvironment`, `listSkills`, `syncSkills`, `sessionCodec`) for Claude Code, Codex, OpenClaw bots, etc. Roles are configured to use the Claude adapter by default and Codex as fallback.
+- **Paperclip → harnesses:** Paperclip is runtime-agnostic and ships adapters implementing `ServerAdapterModule` (`execute`, `testEnvironment`, `listSkills`, `syncSkills`, `sessionCodec`) for Claude Code, Codex, OpenClaw bots, etc. Both Claude and Codex adapters are active peers; the orchestrator assigns providers to planner/implementer/reviewer slots per task. Relay maps to Paperclip's **sequential pipeline** pattern, the capped revision to its **QA-loop** checkpoint, and council to two parallel planners + a reconciliation handoff. The cross-review invariant and escalation policy live in `org-chart.yaml` governance.
 - **Harnesses → Hermes:** Both Claude Code and Codex support MCP. Shared memory is exposed as a **memory MCP server** (recall/prefetch/write tools) backed by Hermes, so every sub-agent reads/writes the same store without embedding Hermes' agent loop. Hermes' `MemoryProvider` ABC (`initialize`, `prefetch`, `sync_turn`, `handle_tool_call`, `get_tool_schemas`) is the contract the cloud tier implements.
 
 ---
@@ -83,7 +84,7 @@ cloud-sandbox/
 │   └── plugins/paperclip-bridge/   # OpenClaw plugin: channel ↔ Paperclip
 ├── paperclip/
 │   ├── config/org-chart.yaml       # roles, budgets, governance, default goals
-│   └── adapters/                   # Claude (primary) + Codex (secondary) wiring
+│   └── adapters/                   # Claude + Codex peer adapter wiring (cross-review)
 ├── memory-mcp/                     # MCP server exposing Hermes memory as tools
 └── scripts/
     ├── up.sh / down.sh
@@ -97,18 +98,19 @@ cloud-sandbox/
 
 ## Build phases
 
-1. **Scaffold & secrets** — repo skeleton above, `.env.example`, `docker-compose.yml`, healthchecks. Define `org-chart.yaml` roles (CEO/orchestrator → Claude; Developer/Researcher → Claude; Reviewer/fallback → Codex) with per-role budgets.
-2. **Harness layer first (smallest testable unit)** — stand up Claude Code + Codex as Paperclip adapters; verify `testEnvironment` + a trivial `execute` for each. Confirm Claude-primary / Codex-secondary routing.
+1. **Scaffold & secrets** — repo skeleton above, `.env.example`, `docker-compose.yml`, healthchecks. Define `org-chart.yaml` with provider-agnostic role slots (orchestrator/planner/implementer/reviewer), per-role budgets, and governance (kill-switch, human-confirm, escalation).
+2. **Collaboration layer (smallest testable unit)** — stand up **both** Claude and Codex as active peer Paperclip adapters; implement the **relay** and **council** workflows; enforce the cross-review invariant (`reviewer.provider != implementer.provider`) and the human-escalation policy. Verify `testEnvironment` + a trivial `execute` for **both** providers.
 3. **Memory** — deploy self-hosted Hermes provider to the VPS; build `memory-mcp` server (recall/prefetch/write) backed by it + local built-in tier; register it as an MCP server in both harnesses; verify a fact written by one sub-agent is recalled by another.
 4. **Orchestration** — wire Paperclip goals → sub-agent decomposition → results, with budgets/governance/heartbeats. Test a multi-step goal that fans out to ≥2 sub-agents sharing memory.
-5. **Communication front door** — build the OpenClaw `paperclip-bridge` plugin: `message_received` → create Paperclip goal; stream status/result back to the same channel session. Disable OpenClaw's own agent loop. Connect one channel first (Telegram).
-6. **24/7 + safety hardening** — heartbeat monitoring, budget caps, channel allowlists, tool/permission policy via `before_tool_call`, restart policies, VPS reachability.
+5. **Communication front door** — build the OpenClaw `paperclip-bridge` plugin: `message_received` → create Paperclip goal; stream status/result back to the same channel session, **including escalation questions** (council deadlock / failed review) so the user can answer from chat. Disable OpenClaw's own agent loop. Connect one channel first (Telegram).
+6. **24/7 + safety hardening** — heartbeat monitoring, budget caps (accounting for ~2× spend with both providers active), the review-round cap, channel allowlists, tool/permission policy via `before_tool_call`, restart policies, VPS reachability.
 
 ---
 
 ## Safety & governance (autonomous agent)
 - **Channel allowlists** (OpenClaw per-channel sender authorization) so only the user can issue goals.
-- **Per-role budgets + spend caps** in Paperclip; hard kill-switch / pause command.
+- **Per-role budgets + spend caps** in Paperclip; hard kill-switch / pause command. Both providers run concurrently (~2× spend), so review revisions are capped (default 1).
+- **Human escalation, not autonomous tiebreak** — council deadlock or a persistently failing review pauses and asks the user via the OpenClaw channel.
 - **Tool/permission gating** via OpenClaw `before_tool_call` hook and Claude Code permission settings; default-deny for destructive actions, human-in-the-loop confirmation for irreversible/outward-facing steps.
 - **Secrets** only in `.env` / VPS secret store; never committed. Memory data stays on the user's own VPS.
 
@@ -116,9 +118,10 @@ cloud-sandbox/
 
 ## Verification (end-to-end)
 - `docker compose config` validates both compose files; `scripts/up.sh` brings the local stack healthy (all healthchecks green).
-- **Harness check:** Paperclip `testEnvironment` passes for Claude + Codex; a one-line `execute` returns output from each.
+- **Harness check:** Paperclip `testEnvironment` passes for **both** Claude and Codex; a one-line `execute` returns output from each.
+- **Collaboration check:** run a goal in **relay** mode (A plans → B implements → A reviews) and one in **council** mode (joint plan → implement → joint review); assert `reviewer.provider != implementer.provider` across tasks. Force a review failure → confirm one capped revision then **escalation to chat**; force council non-consensus → confirm escalation (no auto-decision).
 - **Memory check:** write a fact via sub-agent A's memory tool → confirm sub-agent B prefetches it (and it persists on the VPS across a restart).
-- **Orchestration check:** submit a goal that requires 2+ sub-agents; confirm decomposition, shared-memory use, budget accounting, and a consolidated result.
+- **Orchestration check:** submit a goal that requires 2+ sub-agents; confirm decomposition, shared-memory use, budget accounting (with both providers active), and a consolidated result.
 - **End-to-end:** send a message from Telegram → goal runs → result returns in the same thread. Confirm budget cap + allowlist + kill-switch behave.
 
 ---

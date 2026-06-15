@@ -1,6 +1,8 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Paperclip org chart: roles, harness routing, and per-role budgets.
-# Claude Code is primary; Codex is the fallback / reviewer.
+# Paperclip org chart: collaboration workflow, role slots, and per-role budgets.
+# Claude Code and Codex run as ACTIVE PEERS (not primary/fallback). Either can
+# plan, implement, or review; the orchestrator assigns providers to role slots
+# per task, subject to the cross-review invariant below.
 # Budgets are hard caps; the global cap (PAPERCLIP_GLOBAL_BUDGET_USD) bounds all.
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -13,41 +15,71 @@ company:
       - irreversible            # deletes, overwrites, force-push
       - outward_facing          # publishing, sending external messages/emails
       - spend_over_usd: 5       # any single action exceeding this needs sign-off
+    # No autonomous tiebreak: these conditions pause and ask the user via OpenClaw.
+    escalate_to_human:
+      - council_no_consensus    # council can't converge on a plan after one exchange
+      - review_failed_after_rounds  # re-review still fails after max_review_rounds
     kill_switch: true           # honor a global pause/stop command from any channel
 
-defaults:
-  adapter: claude               # maps to PAPERCLIP_DEFAULT_ADAPTER
-  fallback_adapter: codex       # used on Claude failure / for second opinions
+# ── Active peer providers ────────────────────────────────────────────────────
+providers:
+  - id: claude                  # Claude Code  (ANTHROPIC_API_KEY / CLAUDE_CODE_MODEL)
+  - id: codex                   # OpenAI Codex (OPENAI_API_KEY / CODEX_MODEL)
 
+# ── Collaboration workflow ───────────────────────────────────────────────────
+workflow:
+  modes: [relay, council]       # both built; selectable per goal
+  default: council              # maps to PAPERCLIP_WORKFLOW_MODE
+  max_review_rounds: 1          # maps to PAPERCLIP_MAX_REVIEW_ROUNDS; then escalate
+  # Hard invariant enforced by the orchestrator on every task:
+  invariants:
+    - reviewer.provider != implementer.provider   # review is always independent
+
+  relay:                        # sequential pipeline: plan -> implement -> review
+    steps:
+      - { slot: planner,     note: "provider A drafts the plan" }
+      - { slot: implementer, note: "provider B (!= A) implements" }
+      - { slot: reviewer,    note: "provider A reviews B's work" }
+      - { slot: qa_loop,     note: "B revises once; if still failing -> escalate" }
+
+  council:                      # parallel plan + reconciliation, then cross-review
+    steps:
+      - { slot: planner, providers: [claude, codex], note: "each drafts, then reconcile to consensus; no consensus -> escalate" }
+      - { slot: implementer, note: "orchestrator assigns one provider; the other becomes reviewer" }
+      - { slot: reviewer, joint: true, note: "both review; changes -> one revision; persistent failure -> escalate" }
+
+# ── Role slots (provider-agnostic; orchestrator fills per task) ───────────────
 roles:
   - id: orchestrator
     title: CEO / Orchestrator
-    adapter: claude
-    budget_usd: 10
-    responsibilities:
-      - Decompose incoming goals into sub-tasks and hire sub-agents.
-      - Enforce budgets and governance; consolidate results for the user.
-
-  - id: developer
-    title: Developer
-    adapter: claude
+    provider: claude            # the coordinating brain; assigns providers to slots
     budget_usd: 8
     responsibilities:
-      - Implement code changes, run builds/tests, iterate.
+      - Decompose incoming goals; pick the workflow mode (relay|council).
+      - Assign providers to planner/implementer/reviewer slots honoring the invariant.
+      - Enforce budgets and governance; route escalations to the user; consolidate results.
 
-  - id: researcher
-    title: Researcher
-    adapter: claude
-    budget_usd: 4
+  - id: planner
+    title: Planner (slot)
+    provider: dynamic           # claude or codex per task
+    budget_usd: 6
     responsibilities:
-      - Gather and synthesize information; write to shared memory.
+      - Produce the implementation plan (relay) or participate in the council (council).
+
+  - id: implementer
+    title: Implementer (slot)
+    provider: dynamic           # must differ from the eventual reviewer
+    budget_usd: 8
+    responsibilities:
+      - Implement the plan; run builds/tests; apply review feedback (capped revisions).
 
   - id: reviewer
-    title: Reviewer / Second opinion
-    adapter: codex              # secondary harness used deliberately here
-    budget_usd: 3
+    title: Reviewer (slot)
+    provider: dynamic           # ALWAYS != implementer.provider
+    budget_usd: 5
     responsibilities:
-      - Independently review developer output; catch regressions.
+      - Independently review the implementer's output; catch regressions.
+      - Persistent disagreement after the capped revision escalates to the user.
 
 # Optional seed goals the orchestrator can pick up on startup (kept empty by default).
 goals: []
