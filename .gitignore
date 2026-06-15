@@ -1,0 +1,26 @@
+# Secrets / local config
+.env
+*.env
+!.env.example
+*.local
+
+# Credentials mounted into harness containers
+secrets/
+.claude/
+.codex/
+.hermes/
+
+# Data volumes
+data/
+volumes/
+*.sqlite
+*.db
+
+# Node / build
+node_modules/
+dist/
+build/
+*.log
+
+# OS
+.DS_Store

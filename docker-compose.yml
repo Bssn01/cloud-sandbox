@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCAL stack — runs on the user's machine.
+# Front door (OpenClaw) → orchestrator (Paperclip) → harnesses (Claude/Codex)
+# → local memory MCP gateway. Shared memory backend lives on the VPS
+# (see docker-compose.vps.yml) and is reached via HERMES_REMOTE_ENDPOINT.
+#
+# NOTE: image references below are placeholders pinned in Phase 1 and must be
+# verified against each project's published images/tags before first `up`.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  paperclip:
+    # Top-level orchestrator: decomposes goals, hires sub-agents, enforces budgets.
+    image: paperclip/paperclip:latest   # TODO(phase2): verify image + tag
+    env_file: .env
+    ports:
+      - "${PAPERCLIP_PORT:-7000}:7000"
+      - "${PAPERCLIP_DASHBOARD_PORT:-7001}:7001"
+    volumes:
+      - ./paperclip/config:/app/config:ro
+      - ./paperclip/adapters:/app/adapters:ro
+      # Harness CLIs invoked by Paperclip adapters need their credentials:
+      - ${HOME}/.claude:/root/.claude:ro
+      - ${HOME}/.codex:/root/.codex:ro
+      - paperclip-data:/app/data
+    depends_on:
+      memory-mcp:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:7000/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  openclaw:
+    # Communication front door. Its own agent loop is DISABLED; the
+    # paperclip-bridge plugin forwards messages to Paperclip and relays replies.
+    image: openclaw/openclaw:latest      # TODO(phase5): verify image + tag
+    env_file: .env
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-8080}:8080"
+    volumes:
+      - ./openclaw/plugins:/app/plugins:ro
+      - openclaw-data:/app/data
+    depends_on:
+      paperclip:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  memory-mcp:
+    # Local MCP server exposing Hermes memory (recall/prefetch/write) as tools
+    # to both harnesses. Hot tier = Hermes built-in SQLite (volume below);
+    # shared tier = external provider on the VPS (HERMES_REMOTE_ENDPOINT).
+    build: ./memory-mcp                  # built in Phase 3
+    env_file: .env
+    ports:
+      - "${MEMORY_MCP_PORT:-9100}:9100"
+    volumes:
+      - hermes-local:/root/.hermes
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9100/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+volumes:
+  paperclip-data:
+  openclaw-data:
+  hermes-local:

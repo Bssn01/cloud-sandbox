@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Paperclip org chart: roles, harness routing, and per-role budgets.
+# Claude Code is primary; Codex is the fallback / reviewer.
+# Budgets are hard caps; the global cap (PAPERCLIP_GLOBAL_BUDGET_USD) bounds all.
+# ─────────────────────────────────────────────────────────────────────────────
+
+company:
+  name: autonomous-agent
+  # The top-level brain that receives goals (from OpenClaw) and decomposes them.
+  ceo: orchestrator
+  governance:
+    require_human_confirmation:
+      - irreversible            # deletes, overwrites, force-push
+      - outward_facing          # publishing, sending external messages/emails
+      - spend_over_usd: 5       # any single action exceeding this needs sign-off
+    kill_switch: true           # honor a global pause/stop command from any channel
+
+defaults:
+  adapter: claude               # maps to PAPERCLIP_DEFAULT_ADAPTER
+  fallback_adapter: codex       # used on Claude failure / for second opinions
+
+roles:
+  - id: orchestrator
+    title: CEO / Orchestrator
+    adapter: claude
+    budget_usd: 10
+    responsibilities:
+      - Decompose incoming goals into sub-tasks and hire sub-agents.
+      - Enforce budgets and governance; consolidate results for the user.
+
+  - id: developer
+    title: Developer
+    adapter: claude
+    budget_usd: 8
+    responsibilities:
+      - Implement code changes, run builds/tests, iterate.
+
+  - id: researcher
+    title: Researcher
+    adapter: claude
+    budget_usd: 4
+    responsibilities:
+      - Gather and synthesize information; write to shared memory.
+
+  - id: reviewer
+    title: Reviewer / Second opinion
+    adapter: codex              # secondary harness used deliberately here
+    budget_usd: 3
+    responsibilities:
+      - Independently review developer output; catch regressions.
+
+# Optional seed goals the orchestrator can pick up on startup (kept empty by default).
+goals: []
