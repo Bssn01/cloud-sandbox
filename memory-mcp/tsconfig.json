@@ -1,0 +1,15 @@
+{
+  "//": "Real build config for this component (uses @types/node). The repo-root tsconfig.json is only for sandbox typechecking with ambient stubs.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "outDir": "dist",
+    "rootDir": "src",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "types": ["node"]
+  },
+  "include": ["src"]
+}

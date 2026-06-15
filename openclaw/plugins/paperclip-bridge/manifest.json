@@ -1,0 +1,14 @@
+{
+  "name": "paperclip-bridge",
+  "version": "0.1.0",
+  "entry": "dist/index.js",
+  "description": "Forwards channel messages to Paperclip and relays results/escalations back.",
+  "capabilities": ["tool", "hooks"],
+  "hooks": ["gateway_start", "message_received", "before_tool_call"],
+  "config": {
+    "PAPERCLIP_URL": { "type": "string", "default": "http://paperclip:7000" },
+    "PAPERCLIP_WORKFLOW_MODE": { "type": "string", "default": "council" },
+    "OPENCLAW_ALLOWLIST": { "type": "string", "required": true }
+  },
+  "//": "TODO: reconcile manifest schema with the real OpenClaw plugin SDK."
+}

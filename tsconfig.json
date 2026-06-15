@@ -1,0 +1,20 @@
+{
+  "//": "Root config used ONLY for in-repo typechecking of the skeletons (npx tsc --noEmit). Each component also ships its own tsconfig for real builds on the user's machine.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "types": []
+  },
+  "include": [
+    "types/ambient.d.ts",
+    "memory-mcp/src",
+    "openclaw/plugins/paperclip-bridge/src",
+    "paperclip/adapters"
+  ]
+}
